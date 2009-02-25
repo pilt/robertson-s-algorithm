@@ -1,11 +1,6 @@
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "mult.h"
 
-// Let us use the `m_` prefix for micro code stuff.
-typedef int16_t m_int16; 
-typedef int32_t m_int32; 
+m_machine_t M;
 
 // We are missing a conversion letter for the `bool` type. With this macro we
 // can do `printf("Boolean value is %c.\n", bv(some_bool))`.
@@ -58,7 +53,37 @@ CONSTRUCT_M_BSTRINGN(32)
 // Get the nth bit from bits. 
 #define m_bitn(bits, n) (((uint32_t)(bits) & (uint32_t)(1 << (n))) ? 1 : 0)
 
-static m_int32 m_mult16(m_int16 x, m_int16 y)
+static void m_arhr_aritr(m_machine_t *machine)
+{
+    machine->flags.c = m_bitn(machine->hr, 0); 
+    machine->hr = ((m_uint16)machine->hr) >> 1;
+    machine->hr = machine->hr | ((machine->ar & 1) << 15);
+    machine->ar = machine->ar >> 1;
+}
+
+static m_int32 m_arhr(m_machine_t *machine)
+{
+    m_int32 result = 0;
+    result = machine->ar;
+    result = result << 16;
+    result |= (m_uint16)machine->hr;
+    return result;
+}
+
+static void m_debug_machine(m_machine_t *machine)
+{
+    char buf1[64];
+    m_bstring16(buf1, machine->ar);
+    debug_print("  AR=%s (%d)\n", buf1, machine->ar);
+    m_bstring16(buf1, machine->hr);
+    debug_print("  HR=%s (%d)\n", buf1, machine->hr);
+    debug_print("  flags(C=%d, L=%d ...)\n", 
+            machine->flags.c, machine->flags.l);
+    m_bstring32(buf1, m_arhr(machine));
+    debug_print("  ARHR=%s (%d)\n", buf1, m_arhr(machine));
+}
+
+static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
 {
     // Ignore the m_bstring32 and debug_print calls. They are just for
     // debugging.
@@ -70,48 +95,72 @@ static m_int32 m_mult16(m_int16 x, m_int16 y)
     m_int32 result = 0;
     int spill = 0;
 
-    m_bstring16(buf1, x); 
-    m_bstring16(buf2, y); 
+    m_bstring16(buf1, machine->pm0); 
+    m_bstring16(buf2, machine->grx); 
     debug_print("X:   %s\n     = %d\nY:   %s\n     = %d\n", 
-            buf1, x, buf2, y);
-    m_bstring32(buf1, x*y);
-    debug_print("X*Y: %s\n     = %d\n\n", buf1, x*y);
+            buf1, machine->pm0, buf2, machine->grx);
+    m_bstring32(buf1, machine->pm0*machine->grx);
+    debug_print("X*Y: %s\n     = %d\n\n", buf1, machine->pm0*machine->grx);
 
-    for (int i = 0; i != 16; ++i) {
-        m_bstring32(buf1, result);
+    // Initialize loop counter, L flag becomes 0.
+    machine->lc = 16;
+    machine->flags.l = 0;
+    
+    machine->ar = 0;
+    machine->hr = machine->pm0;
+    
+    int loop_count = 0;
+    while (machine->flags.l != 1) {
+        debug_print("%d.\n", loop_count++);
+        m_debug_machine(machine);
 
-        result = result >> 1;
-        if (m_bitn(x, i) == 1) {
-            if (i == 15) { // last iteration, MSB is 1
-                result -= y << 15;
-                m_bstring32(buf2, -(y << i));
-            }
-            else {
-                result += y << 15;
-                m_bstring32(buf2, (y << i));
-            }
+        // Decrement loop counter.
+        if (machine->lc == 0) {
+            machine->flags.l = 1;
         }
         else {
-            m_bstring32(buf2, 0);
+            machine->lc -= 1;
         }
+        
+        // ARHR arithmetic shift right.
+        m_arhr_aritr(machine);
 
-        debug_print("%2d:  %s\n   + %s %cX_%d*Y\n",
-                i + 1, buf1, buf2, i == 15 ? '-' : ' ', i);
+        if (machine->flags.c == 1) {
+            machine->ar += machine->pm0;
+        }
+        
+        debug_print("\n");
     }
-
-    m_bstring32(buf1, result);
-    debug_print("\n   = %s\n", buf1);
-    debug_print("   = %d\n", result);
 
     return result;
 }
 
+static void m_init_machine(m_machine_t *machine)
+{
+    machine->flags.z = 0;
+    machine->flags.n = 0;
+    machine->flags.o = 0;
+    machine->flags.c = 0;
+    machine->flags.l = 0;
+    machine->ar = 0;
+    machine->hr = 0;
+    machine->pm0 = 0;
+    machine->pm1 = 0;
+    machine->grx = 0;
+    machine->lc = 0;
+}
+
 int main(int argc, char **argv)
 {
-    m_mult16(5, 0x7FF0);
+    m_init_machine(&M); // M is our global machine
+    M.pm0 = 0xF0F0; // X
+    M.grx = 5; // Y
+    m_mult16(&M);
+    /*
     debug_print("\n\n");
     m_mult16(-5, 0xF0);
     debug_print("\n\n");
     m_mult16(0x8000, 0x7FFF);
+    */
     return 0;
 }
