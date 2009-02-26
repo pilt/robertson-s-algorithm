@@ -27,3 +27,11 @@ typedef struct m_machine {
     m_int16 grx;
     m_int16 lc; // loop counter
 } m_machine_t;
+
+static void debug_print(const char *fmt, ...);
+static void m_arhr_aritr(m_machine_t *machine);
+static m_int32 m_arhr(m_machine_t *machine);
+static void m_debug_machine(m_machine_t *machine);
+static void m_add_ar(m_machine_t *machine, m_int16 a);
+static void m_mult16(m_machine_t *machine);
+static void m_init_machine(m_machine_t *machine);
