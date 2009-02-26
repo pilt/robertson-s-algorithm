@@ -1,9 +1,5 @@
 #include "mult.h"
 
-// We are missing a conversion letter for the `bool` type. With this macro we
-// can do `printf("Boolean value is %c.\n", bv(some_bool))`.
-#define bv(b) ((b) ? 'T' : 'F')
-
 static void
 debug_print(const char *fmt, ...)
 {
@@ -81,7 +77,6 @@ static void m_add_ar(m_machine_t *machine, m_int16 a)
 {
     m_int16 old_ar = machine->ar;
     machine->ar = machine->ar + a;
-    debug_print("AR = AR + Y (%d = %d + %d)\n", machine->ar, old_ar, a);
 
     // Update O flag (overflow) appropriately.
     machine->flags.o = 0;
@@ -97,43 +92,36 @@ static void m_add_ar(m_machine_t *machine, m_int16 a)
     }
 }
 
-static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
+static void m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
 {
-    // Ignore the m_bstring32 and debug_print calls. They are just for
-    // debugging.
-    
     // Buffers to put binary numbers in.
     char buf1[64];
     char buf2[64];
 
-    m_int32 result = 0;
+    // Keep input values.
+    m_int16 x = machine->pm0;
+    m_int16 y = machine->grx;
 
-    m_bstring16(buf1, machine->pm0); 
-    m_bstring16(buf2, machine->grx); 
-    debug_print("X:   %s\n     = %d\nY:   %s\n     = %d\n", 
-            buf1, machine->pm0, buf2, machine->grx);
-    m_bstring32(buf1, machine->pm0*machine->grx);
-    debug_print("X*Y: %s\n     = %d\n\n", buf1, machine->pm0*machine->grx);
     m_int32 should_be = machine->pm0 * machine->grx;
 
     // Initialize loop counter, L flag becomes 0.
     machine->lc = 15;
     machine->flags.l = 0;
     
+    // Reset AR, put X in HR.    
     machine->ar = 0;
     machine->hr = machine->pm0;
-
+    
+    // Debugging.    
     debug_print("Entry.\n");
     m_debug_machine(machine);
     debug_print("\n");
 
-    int shift_count = 0;
     // ARHR arithmetic shift right.
-    debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
     m_arhr_aritr(machine);
     
     int loop_count = 0;
-    while (true) {
+    while (machine->flags.l != 1) {
         // Decrement loop counter.
         if (machine->lc == 0) {
             machine->flags.l = 1;
@@ -142,21 +130,21 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
             machine->lc -= 1;
         }
 
-        if (machine->flags.l == 1) {
-            break;
-        }
-
+        m_add_ar(machine, 0); 
         if (machine->flags.c == 1) {
-            m_add_ar(machine, machine->grx);
+            if (machine->flags.l != 1) {
+                m_add_ar(machine, machine->grx);
+            }
+            else {
+                m_add_ar(machine, -machine->grx);
+            }
         }
-        else {
-            m_add_ar(machine, 0);
-        }
+        // else { m_add_ar(machine, 0); } // not needed if we have it before
         
         // ARHR arithmetic shift right.
-        debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
         m_arhr_aritr(machine);
-
+        
+        // Fix spill.        
         if (machine->flags.o == 1) {
             m_bstring16(buf1, machine->ar);
             if (m_bitn(machine->ar, 15) == 0) {
@@ -166,39 +154,12 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
                 machine->ar = (m_uint16)machine->ar & (m_uint16)0x7FFF;
             }
             m_bstring16(buf2, machine->ar);
-            debug_print("flip\n%s\n%s\n", buf1, buf2);
         }
 
         debug_print("Bit %d processed.\n", loop_count++);
         m_debug_machine(machine);
         debug_print("\n");
     }
-
-    if (machine->flags.c == 1) {
-        m_add_ar(machine, -machine->grx);
-    }
-    else {
-        m_add_ar(machine, 0);
-    }
-    // ARHR arithmetic shift right.
-    debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
-    m_arhr_aritr(machine);
-
-    if (machine->flags.o == 1) {
-        m_bstring16(buf1, machine->ar);
-        if (m_bitn(machine->ar, 15) == 0) {
-            machine->ar = (m_uint16)machine->ar | (m_uint16)0x8000;
-        }
-        else {
-            machine->ar = (m_uint16)machine->ar & (m_uint16)0x7FFF;
-        }
-        m_bstring16(buf2, machine->ar);
-        debug_print("flip\n%s\n%s\n", buf1, buf2);
-    }
-    
-    debug_print("Bit %d processed.\n", loop_count++);
-    m_debug_machine(machine);
-    debug_print("\n");
 
     if (m_arhr(machine) != should_be) {
         debug_print("Incorrect answer.\n");
@@ -208,7 +169,15 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
                 buf1, m_arhr(machine), buf2, should_be);
     }
 
-    return result;
+    // Put back in program memory.
+    machine->pm0 = machine->ar;
+    machine->pm1 = machine->hr;
+    m_bstring16(buf1, machine->pm0);
+    m_bstring16(buf2, machine->pm1);
+    debug_print("PM0: %s (%d)\nPM1: %s (%d)\n",
+            buf1, machine->pm0, buf2, machine->pm1);
+    debug_print("\n(Input was X=%d, Y=%d. Result is in last ARHR value.)\n", 
+            x, y);
 }
 
 static void m_init_machine(m_machine_t *machine)
@@ -232,6 +201,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: %s X Y\n", argv[0]);
         return -1;
     }
+
     m_machine_t M;
     m_init_machine(&M);
 
