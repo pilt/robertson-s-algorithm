@@ -1,7 +1,5 @@
 #include "mult.h"
 
-m_machine_t M;
-
 // We are missing a conversion letter for the `bool` type. With this macro we
 // can do `printf("Boolean value is %c.\n", bv(some_bool))`.
 #define bv(b) ((b) ? 'T' : 'F')
@@ -17,17 +15,6 @@ debug_print(const char *fmt, ...)
     }
     va_end(args);
 #endif
-}
-
-static bool m_same_sign16(m_int16 a, m_int16 b)
-{
-    if (a >= 0 && b >= 0) {
-        return true;
-    }
-    else if (a < 0 && b < 0) {
-        return true;
-    }
-    return false;
 }
 
 // Construct functions for making binary represantions of integers.
@@ -59,6 +46,11 @@ static void m_arhr_aritr(m_machine_t *machine)
     machine->hr = ((m_uint16)machine->hr) >> 1;
     machine->hr = machine->hr | ((machine->ar & 1) << 15);
     machine->ar = machine->ar >> 1;
+    
+    machine->flags.n = 0;
+    if (machine->ar < 0) {
+        machine->flags.n = 1;
+    }
 }
 
 static m_int32 m_arhr(m_machine_t *machine)
@@ -77,10 +69,32 @@ static void m_debug_machine(m_machine_t *machine)
     debug_print("  AR=%s (%d)\n", buf1, machine->ar);
     m_bstring16(buf1, machine->hr);
     debug_print("  HR=%s (%d)\n", buf1, machine->hr);
-    debug_print("  flags(C=%d, L=%d ...)\n", 
-            machine->flags.c, machine->flags.l);
+    debug_print("  flags(C=%d, L=%d, N=%d, O=%d, ...)\n", 
+            machine->flags.c, machine->flags.l, machine->flags.n, 
+            machine->flags.o);
     m_bstring32(buf1, m_arhr(machine));
     debug_print("  ARHR=%s (%d)\n", buf1, m_arhr(machine));
+    debug_print("  LC=%d\n", machine->lc);
+}
+
+static void m_add_ar(m_machine_t *machine, m_int16 a)
+{
+    m_int16 old_ar = machine->ar;
+    machine->ar = machine->ar + a;
+    debug_print("AR = AR + Y (%d = %d + %d)\n", machine->ar, old_ar, a);
+
+    // Update O flag (overflow) appropriately.
+    machine->flags.o = 0;
+    if (old_ar >= 0 && a >= 0) {
+        if (machine->ar < 0) {
+            machine->flags.o = 1;
+        }
+    }
+    else if (old_ar < 0 && a < 0) {
+        if (machine->ar >= 0) {
+            machine->flags.o = 1;
+        }
+    }
 }
 
 static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
@@ -93,7 +107,6 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
     char buf2[64];
 
     m_int32 result = 0;
-    int spill = 0;
 
     m_bstring16(buf1, machine->pm0); 
     m_bstring16(buf2, machine->grx); 
@@ -101,19 +114,26 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
             buf1, machine->pm0, buf2, machine->grx);
     m_bstring32(buf1, machine->pm0*machine->grx);
     debug_print("X*Y: %s\n     = %d\n\n", buf1, machine->pm0*machine->grx);
+    m_int32 should_be = machine->pm0 * machine->grx;
 
     // Initialize loop counter, L flag becomes 0.
-    machine->lc = 16;
+    machine->lc = 15;
     machine->flags.l = 0;
     
     machine->ar = 0;
     machine->hr = machine->pm0;
+
+    debug_print("Entry.\n");
+    m_debug_machine(machine);
+    debug_print("\n");
+
+    int shift_count = 0;
+    // ARHR arithmetic shift right.
+    debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
+    m_arhr_aritr(machine);
     
     int loop_count = 0;
-    while (machine->flags.l != 1) {
-        debug_print("%d.\n", loop_count++);
-        m_debug_machine(machine);
-
+    while (true) {
         // Decrement loop counter.
         if (machine->lc == 0) {
             machine->flags.l = 1;
@@ -121,15 +141,71 @@ static m_int32 m_mult16(m_machine_t *machine) // pm0 = X, grx = Y
         else {
             machine->lc -= 1;
         }
-        
-        // ARHR arithmetic shift right.
-        m_arhr_aritr(machine);
+
+        if (machine->flags.l == 1) {
+            break;
+        }
 
         if (machine->flags.c == 1) {
-            machine->ar += machine->pm0;
+            m_add_ar(machine, machine->grx);
+        }
+        else {
+            m_add_ar(machine, 0);
         }
         
+        // ARHR arithmetic shift right.
+        debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
+        m_arhr_aritr(machine);
+
+        if (machine->flags.o == 1) {
+            m_bstring16(buf1, machine->ar);
+            if (m_bitn(machine->ar, 15) == 0) {
+                machine->ar = (m_uint16)machine->ar | (m_uint16)0x8000;
+            }
+            else {
+                machine->ar = (m_uint16)machine->ar & (m_uint16)0x7FFF;
+            }
+            m_bstring16(buf2, machine->ar);
+            debug_print("flip\n%s\n%s\n", buf1, buf2);
+        }
+
+        debug_print("Bit %d processed.\n", loop_count++);
+        m_debug_machine(machine);
         debug_print("\n");
+    }
+
+    if (machine->flags.c == 1) {
+        m_add_ar(machine, -machine->grx);
+    }
+    else {
+        m_add_ar(machine, 0);
+    }
+    // ARHR arithmetic shift right.
+    debug_print("ARHR >> 1 (shift count = %d)\n", ++shift_count);
+    m_arhr_aritr(machine);
+
+    if (machine->flags.o == 1) {
+        m_bstring16(buf1, machine->ar);
+        if (m_bitn(machine->ar, 15) == 0) {
+            machine->ar = (m_uint16)machine->ar | (m_uint16)0x8000;
+        }
+        else {
+            machine->ar = (m_uint16)machine->ar & (m_uint16)0x7FFF;
+        }
+        m_bstring16(buf2, machine->ar);
+        debug_print("flip\n%s\n%s\n", buf1, buf2);
+    }
+    
+    debug_print("Bit %d processed.\n", loop_count++);
+    m_debug_machine(machine);
+    debug_print("\n");
+
+    if (m_arhr(machine) != should_be) {
+        debug_print("Incorrect answer.\n");
+        m_bstring32(buf1, m_arhr(machine));
+        m_bstring32(buf2, should_be);
+        debug_print("  %s (%d) is not\n  %s (%d)\n", 
+                buf1, m_arhr(machine), buf2, should_be);
     }
 
     return result;
@@ -152,15 +228,16 @@ static void m_init_machine(m_machine_t *machine)
 
 int main(int argc, char **argv)
 {
-    m_init_machine(&M); // M is our global machine
-    M.pm0 = 0xF0F0; // X
-    M.grx = 5; // Y
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s X Y\n", argv[0]);
+        return -1;
+    }
+    m_machine_t M;
+    m_init_machine(&M);
+
+    M.pm0 = (m_int16)atoi(argv[1]);
+    M.grx = (m_int16)atoi(argv[2]);
     m_mult16(&M);
-    /*
-    debug_print("\n\n");
-    m_mult16(-5, 0xF0);
-    debug_print("\n\n");
-    m_mult16(0x8000, 0x7FFF);
-    */
+
     return 0;
 }
