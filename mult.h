@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 // Let us use the `m_` prefix for micro code stuff.
 typedef int16_t m_int16; 
